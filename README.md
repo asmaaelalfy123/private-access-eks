@@ -225,7 +225,7 @@ aws eks describe-cluster --name dev-main \
 # Expected: { "Public": false, "Private": true }
 ```
 
-## Verification
+## Verification.
 
 ### Test DNS Resolution
 
