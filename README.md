@@ -1,206 +1,349 @@
-# How to Create a Fully Private AWS EKS Cluster
+# Fully Private AWS EKS Cluster with OpenVPN Access
 
-## 📋 Overview
+## Overview
 
-This comprehensive tutorial demonstrates how to create a **fully private Amazon EKS (Elastic Kubernetes Service) cluster** with no public endpoints. Perfect for organizations requiring enhanced security, compliance, and network isolation.
+This project demonstrates a **fully private Amazon EKS cluster** architecture with zero public endpoints. Access is provided exclusively through an OpenVPN bastion host, ensuring complete network isolation for production-grade security.
 
-### 🎯 What You'll Learn
+### Key Features
 
-- ✅ Design and implement a fully private EKS cluster architecture
-- ✅ Configure VPC networking for complete isolation
-- ✅ Set up private API server endpoints
-- ✅ Implement secure bastion host access patterns
-- ✅ Deploy workloads in a completely private environment
-- ✅ Manage ECR (Elastic Container Registry) access via VPC endpoints
-- ✅ Automate everything using Terraform
+- Private EKS cluster with no public API endpoint
+- OpenVPN bastion host for secure VPN-only access
+- Private PostgreSQL EC2 instance for database workloads
+- Route53 private hosted zone for internal DNS resolution
+- Internal NGINX Ingress Controller with AWS internal load balancer
+- Grafana monitoring accessible via private DNS (`grafana.example.pvt`)
 
+---
 
-## 🚀 Quick Start
+## Architecture
 
-### Prerequisites
+![Architecture Diagram](unnamed.jpg)
 
-Before you begin, ensure you have:
+### Architecture Components
+
+| Component | Description |
+|-----------|-------------|
+| **OpenVPN EC2** | Bastion host in public subnet (t3.micro) with Elastic IP for VPN access |
+| **Private EKS Cluster** | Kubernetes control plane with private endpoint only |
+| **EKS Worker Nodes** | t3.large instances in private subnets |
+| **PostgreSQL EC2** | Private database server (10.0.13.109) accessible via VPN |
+| **Route53 Private Zone** | Internal DNS (`example.pvt`) for service discovery |
+| **NGINX Ingress** | Internal load balancer for Kubernetes ingress |
+| **Grafana** | Monitoring dashboard at `grafana.example.pvt` |
+
+### Network Flow
+
+```
+Local Laptop (VPN Client)
+       │
+       ▼ (1) Connect to OpenVPN
+OpenVPN EC2 (Public Subnet - 52.7.26.92:1194)
+       │
+       ▼ (2) Routes pushed: 10.0.0.0/19, 10.0.32.0/19
+       │     DNS pushed: 10.0.0.2 (AWS VPC DNS)
+       │
+AWS VPC (10.0.0.0/16)
+       │
+       ├──► Private Subnet AZ1 (10.0.0.0/19)
+       │    ├── EKS Worker Nodes
+       │    └── PostgreSQL EC2 (10.0.13.109)
+       │
+       ├──► Private Subnet AZ2 (10.0.32.0/19)
+       │    └── EKS Worker Nodes
+       │
+       ├──► EKS Control Plane (Private Endpoint Only)
+       │
+       └──► Route53 Private Hosted Zone (example.pvt)
+            ├── postgres.example.pvt → 10.0.13.109
+            └── grafana.example.pvt → Internal LB
+```
+
+---
+
+## Screenshots
+
+### DNS Resolution - Grafana
+
+![Grafana DNS](grafana.png)
+
+Resolving `grafana.example.pvt` returns a CNAME to the internal load balancer.
+
+### DNS Resolution - PostgreSQL
+
+![PostgreSQL DNS](postgres.png)
+
+Resolving `postgres.example.pvt` returns the private IP `10.0.13.109`.
+
+### Internal Load Balancer Resolution
+
+![Internal LB DNS](Screenshot%20from%202025-12-06%2014-20-24.png)
+
+The internal NGINX ingress load balancer resolves to private IPs (10.0.44.45, 10.0.17.175).
+
+### Connectivity Test - PostgreSQL
+
+![Ping Test](ping.png)
+
+Successful ICMP ping to PostgreSQL private IP from VPN client.
+
+---
+
+## Prerequisites
 
 - AWS CLI configured with appropriate credentials
-- Terraform >= 1.0 installed
-- kubectl installed
-- Basic understanding of AWS networking and EKS
-- AWS account with permissions to create VPC, EKS, IAM resources
+- Terraform >= 1.0
+- kubectl
+- OpenVPN client
+- AWS account with permissions for VPC, EKS, EC2, IAM, Route53
 
-### 📦 Installation
+---
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/asmaaelalfy123/private-access-eks.git
-   
-   ```
+## Infrastructure Configuration
 
+### Network Configuration (terraform/0-locals.tf)
 
-2. **Review and customize variables**
-   ```bash
-   # Edit terraform.tfvars
-   vim terraform.tfvars
-   ```
+| Parameter | Value |
+|-----------|-------|
+| Environment | dev |
+| Region | us-east-1 |
+| VPC CIDR | 10.0.0.0/16 |
+| Private Subnet AZ1 | 10.0.0.0/19 |
+| Private Subnet AZ2 | 10.0.32.0/19 |
+| Public Subnet AZ1 | 10.0.64.0/19 |
+| Public Subnet AZ2 | 10.0.96.0/19 |
+| EKS Cluster Name | dev-main |
+| EKS Version | 1.34 |
 
-3. **Initialize Terraform**
-   ```bash
-   terraform init
-   ```
-
-4. **Plan the deployment**
-   ```bash
-   terraform plan
-   ```
-
-5. **Deploy the infrastructure**
-   ```bash
-   terraform apply
-   ```
-
-6. **Configure kubectl**
-   ```bash
-   aws eks update-kubeconfig --name private-eks-cluster --region us-east-1
-   ```
-
-
-
-## Configuration
-
-### Key Terraform Variables
+### EKS Configuration
 
 ```hcl
-# VPC Configuration
-vpc_cidr            = "10.0.0.0/16"
-availability_zones  = ["us-east-1a", "us-east-1b"]
-private_subnets     = ["10.0.1.0/24", "10.0.2.0/24"]
+# Private endpoint ONLY - no public access
+endpoint_private_access = true
+endpoint_public_access  = false
 
-# EKS Configuration
-cluster_name        = "private-eks-cluster"
-cluster_version     = "1.31"
-endpoint_private    = true
-endpoint_public     = false  # Completely private!
-
-# Node Group Configuration
-node_instance_types = ["t3.medium"]
-desired_size        = 2
-min_size            = 2
-max_size            = 4
+# Node Group
+instance_types = ["t3.large"]
+capacity_type  = "ON_DEMAND"
+desired_size   = 1
+min_size       = 0
+max_size       = 10
 ```
 
-```
-configuration for openvpn on ec2
+### Helm Deployments
+
+| Application | Version | Namespace | Access |
+|-------------|---------|-----------|--------|
+| NGINX Ingress | 4.13.3 | ingress | Internal LB |
+| Grafana | 10.1.1 | monitoring | grafana.example.pvt |
+
+---
+
+## Deployment
+
+### 1. Deploy Infrastructure
+
 ```bash
+cd terraform
+terraform init
+terraform plan
+terraform apply
+```
+
+### 2. Configure OpenVPN Server
+
+SSH into the OpenVPN EC2 instance and run:
+
+```bash
+# Install OpenVPN and EasyRSA
 sudo apt-get update && sudo apt-get -y upgrade
 curl -fsSL https://swupdate.openvpn.net/repos/repo-public.gpg | sudo gpg --dearmor -o /etc/apt/keyrings/openvpn.gpg
 echo "deb [signed-by=/etc/apt/keyrings/openvpn.gpg] http://build.openvpn.net/debian/openvpn/stable $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/openvpn.list
 sudo apt-get update
 sudo apt-get install -y openvpn
+
+# Install EasyRSA
 wget https://github.com/OpenVPN/easy-rsa/releases/download/v3.2.4/EasyRSA-3.2.4.tgz
 tar -zxf EasyRSA-3.2.4.tgz
 sudo mv EasyRSA-3.2.4/ /etc/openvpn/easy-rsa
 sudo ln -s /etc/openvpn/easy-rsa/easyrsa /usr/local/bin/
+
+# Initialize PKI and generate certificates
 cd /etc/openvpn/easy-rsa
 easyrsa init-pki
 easyrsa build-ca nopass
 easyrsa gen-req openvpn-server nopass
 easyrsa sign-req server openvpn-server
 openvpn --genkey secret ta.key
-sudo vim /etc/sysctl.conf
+
+# Enable IP forwarding
+echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf
 sudo sysctl -p
-sudo iptables -t nat -S
-ip route list default
+
+# Configure NAT
 sudo iptables -t nat -I POSTROUTING -s 10.8.0.0/24 -o ens5 -j MASQUERADE
-sudo apt-get install iptables-persistent
-sudo vim /etc/openvpn/server/server.conf
-cat /etc/passwd | grep nobody
-cat /etc/group | grep nogroup
+sudo apt-get install -y iptables-persistent
+
+# Start OpenVPN
 sudo systemctl start openvpn-server@server
-sudo systemctl status openvpn-server@server
 sudo systemctl enable openvpn-server@server
-journalctl --no-pager --full -u openvpn-server@server -f
-easyrsa gen-req example-1 nopass
-easyrsa sign-req client example-1
-cat /etc/openvpn/easy-rsa/pki/ca.crt
-cat /etc/openvpn/easy-rsa/pki/issued/example-1.crt
-cat /etc/openvpn/easy-rsa/pki/private/example-1.key
-cat /etc/openvpn/easy-rsa/ta.key
-netstat -nr -f inet
-journalctl --no-pager --full -u openvpn-server@server -f
 ```
 
- Via VPN Connection
+### 3. Generate Client Certificate
 
 ```bash
-# Set up AWS Client VPN 
+cd /etc/openvpn/easy-rsa
+easyrsa gen-req client-1 nopass
+easyrsa sign-req client client-1
+```
+
+### 4. Create Client Configuration
+
+Create `.ovpn` file with:
+- CA certificate (`pki/ca.crt`)
+- Client certificate (`pki/issued/client-1.crt`)
+- Client key (`pki/private/client-1.key`)
+- TLS auth key (`ta.key`)
+
+See `example-1.ovpn` for reference.
+
+### 5. Connect and Configure kubectl
+
+```bash
 # Connect to VPN
-# Access cluster directly
-```
+sudo openvpn --config client.ovpn
 
-## 📊 Verification
+# Update kubeconfig (from VPN-connected machine)
+aws eks update-kubeconfig --name dev-main --region us-east-1
 
-Run these commands to verify your private cluster setup:
-
-```bash
-# Check cluster endpoint configuration
-aws eks describe-cluster --name private-eks-cluster \
-  --query 'cluster.resourcesVpcConfig.endpointPublicAccess'
-# Output should be: false
-
-# Verify nodes are running
+# Verify access
 kubectl get nodes
-
-# Check VPC endpoints
-aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=vpc-xxxxx"
-
-# Test private ECR access
-docker pull <account-id>.dkr.ecr.<region>.amazonaws.com/myapp:latest
 ```
 
-##  Key Concepts Explained
+---
 
-### Why Fully Private?
+## Verification
 
-1. **Enhanced Security**: No public endpoints reduce attack surface
-2. **Compliance**: Meets strict regulatory requirements (PCI-DSS, HIPAA, etc.)
-3. **Data Sovereignty**: All traffic stays within AWS network
-4. **Network Isolation**: Complete control over network boundaries
-
-### Private vs Public EKS Clusters
-
-| Feature | Public Cluster | Private Cluster |
-|---------|---------------|-----------------|
-| API Endpoint | Public + Private | Private Only |
-| Node Internet | Via IGW/NAT | Via VPC Endpoints |
-| kubectl Access | From anywhere | Within VPC only |
-| Container Images | Pull from anywhere | ECR via VPC endpoint |
-| Security Posture | Standard | Maximum |
-
-## Testing
-
-Deploy a sample application to test the cluster:
+### Test DNS Resolution
 
 ```bash
-# Apply sample deployment
-kubectl apply -f kubernetes/deployment.yaml
+# PostgreSQL DNS
+dig postgres.example.pvt
+# Expected: 10.0.13.109
 
-# Check deployment status
-kubectl get deployments
-kubectl get pods
-
-# Test service connectivity
-kubectl get services
+# Grafana DNS
+dig grafana.example.pvt
+# Expected: CNAME to internal-*.elb.amazonaws.com
 ```
 
-
-##  Cleanup
-
-To destroy all resources:
+### Test Connectivity
 
 ```bash
-# Delete Kubernetes resources first
-kubectl delete -f kubernetes/
+# Ping PostgreSQL
+ping 10.0.13.109
 
-# Destroy Terraform infrastructure
+# Access Grafana (from browser while connected to VPN)
+# URL: http://grafana.example.pvt
+# Username: admin
+# Password: devops123
+```
+
+### Verify Private Endpoint
+
+```bash
+aws eks describe-cluster --name dev-main \
+  --query 'cluster.resourcesVpcConfig.{Public:endpointPublicAccess,Private:endpointPrivateAccess}'
+# Expected: { "Public": false, "Private": true }
+```
+
+---
+
+## Security Features
+
+| Feature | Implementation |
+|---------|----------------|
+| Zero Public Endpoints | EKS API private only |
+| VPN-Only Access | OpenVPN bastion with certificate auth |
+| Private Subnets | All compute in isolated subnets |
+| Security Group Isolation | Explicit ingress rules between components |
+| Private DNS | Route53 private hosted zone |
+| Internal Load Balancer | NGINX ingress uses AWS internal ALB |
+| Encryption | AES-256-GCM cipher, SHA256 auth |
+
+---
+
+## File Structure
+
+```
+private-access-eks/
+├── README.md
+├── terraform/
+│   ├── 0-locals.tf          # Environment variables
+│   ├── 1-providers.tf       # AWS provider config
+│   ├── 2-vpc.tf             # VPC and networking
+│   ├── 3-openvpn-sg.tf      # OpenVPN security group
+│   ├── 4-openvpn-ec2.tf     # OpenVPN EC2 instance
+│   ├── 5-postgres-sg.tf     # PostgreSQL security group
+│   ├── 6-postgres-ec2.tf    # PostgreSQL EC2 instance
+│   ├── 7-route53.tf         # Private hosted zone
+│   ├── 8-example-dns.tf     # DNS records
+│   ├── 9-eks.tf             # EKS cluster
+│   ├── 10-eks-sg.tf         # EKS security rules
+│   ├── 11-eks-nodes.tf      # EKS node group
+│   ├── 12-nginx-ingress.tf  # NGINX Helm release
+│   ├── 13-grafana.tf        # Grafana Helm release
+│   └── values/
+│       ├── nginx-ingress.yaml
+│       └── grafana.yaml
+├── server.conf              # OpenVPN server config
+├── example-1.ovpn           # Sample client config
+├── vars                     # EasyRSA variables
+├── delete-vpc.sh            # Cleanup script
+└── Screenshots/
+    ├── unnamed.jpg          # Architecture diagram
+    ├── grafana.png          # Grafana DNS resolution
+    ├── postgres.png         # PostgreSQL DNS resolution
+    ├── ping.png             # Connectivity test
+    └── Screenshot from 2025-12-06 14-20-24.png
+```
+
+---
+
+## Cleanup
+
+### Using Terraform
+
+```bash
+cd terraform
 terraform destroy
 ```
 
+### Manual Cleanup (if needed)
+
+Use the provided cleanup script:
+
+```bash
+./delete-vpc.sh
+```
+
+This script removes resources in the correct dependency order:
+1. NAT Gateways
+2. EC2 Instances
+3. Load Balancers
+4. Elastic IPs
+5. VPC Endpoints
+6. Security Groups
+7. Network Interfaces
+8. Internet Gateways
+9. Subnets
+10. Route Tables
+11. VPC
+
+---
+
+## Why Fully Private?
+
+1. **Enhanced Security** - No public endpoints eliminate external attack surface
+2. **Compliance** - Meets PCI-DSS, HIPAA, and SOC2 requirements
+3. **Data Sovereignty** - All traffic remains within AWS network
+4. **Network Isolation** - Complete control over network boundaries
+5. **Audit Trail** - All access through VPN provides clear audit logging
