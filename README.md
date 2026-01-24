@@ -17,7 +17,7 @@ This project demonstrates a **fully private Amazon EKS cluster** architecture wi
 
 ## Architecture
 
-![Architecture Diagram](unnamed.jpg)
+![Architecture Diagram](architecture.jpg)
 
 ### Architecture Components
 
