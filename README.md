@@ -62,11 +62,7 @@ AWS VPC (10.0.0.0/16)
 
 ## Screenshots
 
-### DNS Resolution - Grafana
 
-![Grafana DNS](grafana.png)
-
-Resolving `grafana.example.pvt` returns a CNAME to the internal load balancer.
 
 ### DNS Resolution - PostgreSQL
 
@@ -221,19 +217,30 @@ kubectl get nodes
 
 ---
 
+### Verify Private Endpoint
+
+```bash
+aws eks describe-cluster --name dev-main \
+  --query 'cluster.resourcesVpcConfig.{Public:endpointPublicAccess,Private:endpointPrivateAccess}'
+# Expected: { "Public": false, "Private": true }
+```
+
 ## Verification
 
 ### Test DNS Resolution
 
 ```bash
-# PostgreSQL DNS
-dig postgres.example.pvt
-# Expected: 10.0.13.109
 
 # Grafana DNS
 dig grafana.example.pvt
 # Expected: CNAME to internal-*.elb.amazonaws.com
+
 ```
+### DNS Resolution - Grafana
+
+![Grafana DNS](grafana.png)
+
+Resolving `grafana.example.pvt` returns a CNAME to the internal load balancer.
 
 ### Test Connectivity
 
@@ -247,13 +254,7 @@ ping 10.0.13.109
 # Password: devops123
 ```
 
-### Verify Private Endpoint
 
-```bash
-aws eks describe-cluster --name dev-main \
-  --query 'cluster.resourcesVpcConfig.{Public:endpointPublicAccess,Private:endpointPrivateAccess}'
-# Expected: { "Public": false, "Private": true }
-```
 
 ---
 
