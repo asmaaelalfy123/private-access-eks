@@ -2,6 +2,7 @@
 
 ## Overview
 
+
 This project demonstrates a **fully private Amazon EKS cluster** architecture with zero public endpoints. Access is provided exclusively through an OpenVPN bastion host, ensuring complete network isolation for production-grade security.
 
 ### Key Features
